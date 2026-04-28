@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sunrise to Sunset — A Day in Light</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Serif:ital@0;1&display=swap');
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#06060e;--border:rgba(255,255,255,0.08);--muted:rgba(255,255,255,0.35);
+    --accent:#4cc9f0;--mono:'DM Mono',monospace;--serif:'Instrument Serif',serif;
+  }
+  html,body{min-height:100%;background:var(--bg);color:#fff;font-family:var(--mono);overflow-x:hidden}
+  body{display:flex;flex-direction:column;align-items:center;padding:32px 16px 40px}
+  header{text-align:center;margin-bottom:28px;max-width:520px}
+  header h1{font-family:var(--serif);font-style:italic;font-size:clamp(22px,4vw,34px);font-weight:400;color:#fff;margin-bottom:8px}
+  header p{font-size:11px;color:var(--muted);letter-spacing:0.08em;text-transform:uppercase;line-height:1.6}
+  .card{width:100%;max-width:820px;background:#0a0a14;border:0.5px solid var(--border);border-radius:16px;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,0.6)}
+  canvas{width:100%;display:block}
+  .controls{padding:14px 18px;border-top:0.5px solid var(--border);display:flex;align-items:center;gap:12px}
+  .ctrl-label{font-size:10px;color:var(--muted);letter-spacing:0.06em;text-transform:uppercase;flex-shrink:0}
+  #sl{flex:1;-webkit-appearance:none;appearance:none;height:2px;background:rgba(255,255,255,0.12);border-radius:1px;outline:none;cursor:pointer}
+  #sl::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px rgba(76,201,240,0.5);cursor:pointer}
+  #sl::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:var(--accent);border:none;cursor:pointer}
+  #tspan{font-size:11px;color:rgba(255,255,255,0.65);min-width:88px;text-align:right;flex-shrink:0}
+  .stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;border-top:0.5px solid var(--border);background:var(--border)}
+  .stat{background:#0a0a14;padding:12px 14px;text-align:center}
+  .stat-label{font-size:8px;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:4px}
+  .stat-val{font-size:14px;font-weight:500;color:#fff}
+  .stat-sub{font-size:8px;color:var(--muted);margin-top:2px;min-height:10px}
+  .desc-bar{padding:10px 18px 14px;font-size:11px;line-height:1.65;color:var(--muted);border-top:0.5px solid var(--border);min-height:38px}
+  footer{margin-top:20px;font-size:9px;color:rgba(255,255,255,0.18);letter-spacing:0.06em;text-align:center}
+  @media(max-width:500px){body{padding:16px 10px 28px}.controls{gap:8px;padding:11px 12px}.stat{padding:10px 8px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Sunrise to Sunset</h1>
+  <p>A day in light — how Earth's rotation changes the path sunlight travels to reach you</p>
+</header>
+<div class="card">
+  <canvas id="cMain"></canvas>
+  <div class="controls">
+    <span class="ctrl-label">Time of day</span>
+    <input type="range" id="sl" min="0" max="360" step="0.5" value="180">
+    <span id="tspan">Noon</span>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="stat-label">Time of day</div><div class="stat-val" id="dtime">Noon</div><div class="stat-sub">&nbsp;</div></div>
+    <div class="stat"><div class="stat-label">Light travel distance</div><div class="stat-val" id="dpath">1.0&times;</div><div class="stat-sub" id="dpathsub">longer than straight up</div></div>
+    <div class="stat"><div class="stat-label">Sky colour</div><div class="stat-val" id="dcol" style="color:#fff8c0">White-yellow</div><div class="stat-sub" id="dcolsub">of direct sunlight</div></div>
+  </div>
+  <div class="desc-bar" id="ddesc">Sunlight drops straight through the atmosphere — shortest possible journey to your eyes.</div>
+</div>
+<footer>Drag the slider &nbsp;·&nbsp; Sunrise from the east, sunset to the west &nbsp;·&nbsp; Animates automatically</footer>
+
+<script>
+(function(){
+  var cv = document.getElementById('cMain');
+  var sl = document.getElementById('sl');
+  var DPR = window.devicePixelRatio || 1;
+  var lastTs = null;
+  var rafId = null;
+
+  function lerp(a,b,t){return a+(b-a)*t;}
+  function clamp(v,lo,hi){return v<lo?lo:v>hi?hi:v;}
+  function sm(t){t=clamp(t,0,1);return t*t*(3-2*t);}
+
+  function setupCanvas(){
+    var W=cv.parentElement.offsetWidth;
+    var H=Math.round(Math.min(W*0.52,360));
+    cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);
+    cv.style.height=H+'px';
+    cv.getContext('2d').setTransform(DPR,0,0,DPR,0,0);
+  }
+
+  function lerpHex(a,b,t){
+    t=clamp(t,0,1);
+    var pa=parseInt(a.slice(1),16),pb=parseInt(b.slice(1),16);
+    var ar=(pa>>16)&255,ag=(pa>>8)&255,ab=pa&255;
+    var br=(pb>>16)&255,bg=(pb>>8)&255,bb=pb&255;
+    var r=Math.round(ar+t*(br-ar)),g=Math.round(ag+t*(bg-ag)),bl=Math.round(ab+t*(bb-ab));
+    return '#'+(r<16?'0':'')+r.toString(16)+(g<16?'0':'')+g.toString(16)+(bl<16?'0':'')+bl.toString(16);
+  }
+  function lR(a,b,t){t=clamp(t,0,1);return[a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1]),a[2]+t*(b[2]-a[2]),a[3]+t*(b[3]-a[3])];}
+
+  // Returns sky color data as raw [r,g,b,a] arrays + helper functions
+  // elev: degrees, -18=deep night, 0=horizon, 90=overhead
+  function skyPal(elev){
+    var e=clamp(elev,-18,90);
+    // Color palette: [r,g,b]
+    var tN=[1,2,8],tTw=[8,12,30],tD=[15,25,80],tDy=[22,58,140];
+    var mN=[2,4,15],mTw=[20,15,35],mDa=[55,30,12],mMo=[38,75,155],mDy=[70,125,192];
+    var hN=[4,6,16],hTw=[75,28,8],hDa=[215,75,18],hMo=[225,145,55],hDy=[192,218,242];
+    var lTw=[115,18,4],lDa=[250,115,28],lMo=[252,185,95],lDy=[208,228,248];
+
+    var top,mid,hor,low,type,sunCol,glowR,glowCol;
+
+    if(e<-6){
+      var f=sm(clamp((e+18)/12,0,1));
+      top=lR([...tN,1],[...tTw,1],f); mid=lR([...mN,1],[...mTw,1],f);
+      hor=lR([...hN,1],[...hTw,1],f); low=hor;
+      type='night'; sunCol=null; glowR=0; glowCol=null;
+    } else if(e<0){
+      var f=sm(clamp((e+6)/6,0,1));
+      top=lR([...tTw,1],[...tD,1],f); mid=lR([...mTw,1],[...mDa,1],f);
+      hor=lR([...hTw,1],[...hDa,1],f); low=lR([...lTw,1],[...lDa,1],f);
+      type='twilight'; sunCol=lerpHex('#ff6600','#ffcc00',f); glowR=0.24;
+      glowCol='rgba(255,'+Math.round(lerp(55,145,f))+',0,0.55)';
+    } else if(e<8){
+      var f=sm(clamp(e/8,0,1));
+      top=lR([...tD,1],[...tDy,1],f); mid=lR([...mDa,1],[...mMo,1],f);
+      hor=lR([...hDa,1],[...hMo,1],f); low=lR([...lDa,1],[...lMo,1],f);
+      type='sunrise'; sunCol=lerpHex('#ffcc00','#ffe880',f); glowR=lerp(0.24,0.17,f);
+      glowCol='rgba(255,'+Math.round(lerp(130,195,f))+','+Math.round(lerp(0,38,f))+','+lerp(0.58,0.36,f).toFixed(2)+')';
+    } else if(e<25){
+      var f=sm(clamp((e-8)/17,0,1));
+      top=lR([...tDy,1],[...tDy,1],f); mid=lR([...mMo,1],[...mDy,1],f);
+      hor=lR([...hMo,1],[...hDy,1],f); low=lR([...lMo,1],[...lDy,1],f);
+      type='morning'; sunCol=lerpHex('#ffe880','#fff8d0',f); glowR=lerp(0.17,0.1,f);
+      glowCol='rgba(255,238,'+Math.round(lerp(38,155,f))+','+lerp(0.36,0.18,f).toFixed(2)+')';
+    } else {
+      var f=sm(clamp((e-25)/65,0,1));
+      top=lR([...tDy,1],[26,63,143,1],f); mid=lR([...mDy,1],[74,132,200,1],f);
+      hor=lR([...hDy,1],[198,225,248,1],f); low=hor;
+      type='day'; sunCol=lerpHex('#fff8d0','#fffef0',f); glowR=lerp(0.1,0.08,f);
+      glowCol='rgba(255,255,218,'+lerp(0.18,0.12,f).toFixed(2)+')';
+    }
+    // opacity-controlled color string builders
+    var mk=function(c){return function(a){return'rgba('+Math.round(c[0])+','+Math.round(c[1])+','+Math.round(c[2])+','+clamp(a,0,1).toFixed(3)+')';};};
+    return{
+      topRaw:top,midRaw:mid,horRaw:hor,lowRaw:low,
+      topA:mk(top),midA:mk(mid),horA:mk(hor),lowA:mk(low),
+      type:type,sunCol:sunCol,glowR:glowR,glowCol:glowCol
+    };
+  }
+
+  function lightColor(pf){
+    var f=clamp((pf-1)/7,0,1),sf=sm(f);
+    var r=255,g=Math.round(lerp(255,38,sf)),bl=Math.round(lerp(245,0,sf*sf));
+    return{r:r,g:g,bl:bl,css:'rgb('+r+','+g+','+bl+')'};
+  }
+
+  function drawGlobe(ctx,cx,cy,r,rot){
+    ctx.save();ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.clip();
+    var eg=ctx.createRadialGradient(cx-r*.2,cy-r*.2,r*.05,cx,cy,r);
+    eg.addColorStop(0,'#1e3a5f');eg.addColorStop(.5,'#0f1e35');eg.addColorStop(1,'#070e1a');
+    ctx.fillStyle=eg;ctx.fillRect(cx-r,cy-r,r*2,r*2);
+    ctx.save();ctx.translate(cx,cy);ctx.rotate(rot);
+    var lands=[[-0.15,-0.3,.22,.28,-.3],[.28,.12,.25,.2,.4],[-.35,.25,.18,.14,.2],[.05,.4,.2,.12,-.1],[-.5,-.1,.14,.18,.5],[.45,-.3,.16,.22,-.2],[.15,-.45,.28,.18,.3]];
+    ctx.fillStyle='#1a5c28';
+    for(var i=0;i<lands.length;i++){var l=lands[i];ctx.save();ctx.translate(l[0]*r,l[1]*r);ctx.rotate(l[4]);ctx.beginPath();ctx.ellipse(0,0,l[2]*r,l[3]*r,0,0,Math.PI*2);ctx.fill();ctx.restore();}
+    ctx.strokeStyle='rgba(255,255,255,0.05)';ctx.lineWidth=.5;
+    var lats=[-0.6,-0.3,0,0.3,0.6];
+    for(var i=0;i<lats.length;i++){var ly=lats[i]*r,lx=Math.sqrt(Math.max(0,r*r-ly*ly));ctx.beginPath();ctx.moveTo(-lx,ly);ctx.lineTo(lx,ly);ctx.stroke();}
+    ctx.restore();
+    // night shadow (right hemisphere = away from sun)
+    ctx.save();ctx.translate(cx,cy);
+    ctx.beginPath();ctx.arc(0,0,r+1,-Math.PI/2,Math.PI/2);ctx.lineTo(0,-r-1);ctx.closePath();
+    ctx.fillStyle='rgba(0,0,18,0.8)';ctx.fill();
+    var tg=ctx.createLinearGradient(-r*.1,0,r*.14,0);
+    tg.addColorStop(0,'rgba(0,0,18,0)');tg.addColorStop(1,'rgba(0,0,18,0.8)');
+    ctx.fillStyle=tg;ctx.beginPath();ctx.arc(0,0,r+1,0,Math.PI*2);ctx.fill();
+    ctx.restore();ctx.restore();
+  }
+
+  function draw(){
+    var W=cv.offsetWidth,H=parseInt(cv.style.height)||300;
+    var ctx=cv.getContext('2d');
+    ctx.clearRect(0,0,W,H);
+    var deg=parseFloat(sl.value)||0;
+    var splitX=Math.round(W*.56),spW=splitX,skW=W-splitX;
+
+    // ===== SPACE VIEW =====
+    ctx.save();ctx.beginPath();ctx.rect(0,0,spW,H);ctx.clip();
+    ctx.fillStyle='#06060e';ctx.fillRect(0,0,spW,H);
+    // stars
+    var spts=[[.04,.09],[.11,.22],[.17,.06],[.23,.34],[.3,.13],[.36,.27],[.41,.04],[.47,.17],[.53,.08],[.6,.31],[.66,.05],[.71,.21],[.79,.12],[.86,.29],[.93,.07],[.08,.42],[.55,.43],[.75,.4],[.15,.5],[.5,.48]];
+    ctx.fillStyle='rgba(255,255,255,.48)';
+    for(var i=0;i<spts.length;i++){ctx.beginPath();ctx.arc(spts[i][0]*spW,spts[i][1]*H*.55,.75,0,Math.PI*2);ctx.fill();}
+
+    var sunX=spW*.07,sunY=H*.5,sunR=Math.max(10,spW*.04);
+    var eCX=spW*.72,eCY=H*.5,eR=Math.min(H*.27,82),aR=eR*1.42;
+    var oaR=((360-deg)%360)*Math.PI/180;
+    var oX=eCX+Math.cos(oaR)*eR,oY=eCY+Math.sin(oaR)*eR;
+    var nX=Math.cos(oaR),nY=Math.sin(oaR);
+    var onDay=oX<eCX+eR*.1;
+
+    drawGlobe(ctx,eCX,eCY,eR,-deg*Math.PI/180);
+
+    // atmosphere halo
+    var ag=ctx.createRadialGradient(eCX,eCY,eR*.9,eCX,eCY,aR);
+    ag.addColorStop(0,'rgba(60,130,220,.4)');ag.addColorStop(.5,'rgba(80,160,240,.18)');ag.addColorStop(1,'rgba(80,180,255,0)');
+    ctx.fillStyle=ag;ctx.beginPath();ctx.arc(eCX,eCY,aR,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='rgba(80,160,240,.14)';ctx.lineWidth=.8;ctx.beginPath();ctx.arc(eCX,eCY,aR,0,Math.PI*2);ctx.stroke();
+    ctx.strokeStyle='rgba(60,120,200,.28)';ctx.beginPath();ctx.arc(eCX,eCY,eR,0,Math.PI*2);ctx.stroke();
+
+    // sun
+    var sgr=ctx.createRadialGradient(sunX,sunY,0,sunX,sunY,sunR*3);
+    sgr.addColorStop(0,'rgba(255,248,190,.55)');sgr.addColorStop(1,'rgba(255,200,80,0)');
+    ctx.fillStyle=sgr;ctx.beginPath();ctx.arc(sunX,sunY,sunR*3,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#fff8c0';ctx.beginPath();ctx.arc(sunX,sunY,sunR,0,Math.PI*2);ctx.fill();
+
+    var pf=null,col=null;
+    if(onDay){
+      var dy=oY-eCY,disc=aR*aR-dy*dy;
+      if(disc>=0){
+        var entX=eCX-Math.sqrt(disc);
+        pf=clamp(Math.abs(oX-entX)/(eR*.42),1,8);col=lightColor(pf);
+        ctx.setLineDash([3,5]);ctx.strokeStyle='rgba(255,255,255,.12)';ctx.lineWidth=1;
+        ctx.beginPath();ctx.moveTo(sunX+sunR,sunY);ctx.lineTo(entX,oY);ctx.stroke();ctx.setLineDash([]);
+        ctx.shadowBlur=14;ctx.shadowColor=col.css;ctx.lineWidth=3.5;ctx.strokeStyle=col.css;
+        ctx.beginPath();ctx.moveTo(entX,oY);ctx.lineTo(oX,oY);ctx.stroke();
+        ctx.shadowBlur=3;ctx.lineWidth=1.2;ctx.strokeStyle='rgba(255,255,245,.7)';
+        ctx.beginPath();ctx.moveTo(entX,oY);ctx.lineTo(oX,oY);ctx.stroke();ctx.shadowBlur=0;
+        var ns=Math.round(clamp((pf-1)*3,0,14));
+        for(var i=0;i<ns;i++){var px=lerp(entX+4,oX-4,(i+.5)/Math.max(1,ns)),ang=(i*47.3)%(Math.PI*2),dd=5+(i%3)*4;ctx.fillStyle='rgba(80,155,255,'+(.35*Math.min(1,(px-entX)/32)).toFixed(3)+')';ctx.beginPath();ctx.arc(px+Math.cos(ang)*dd*.5,oY+Math.sin(ang)*dd,1.1,0,Math.PI*2);ctx.fill();}
+      }
+    }
+
+    // observer marker
+    var ms=eR/80;
+    ctx.save();ctx.translate(oX+nX*.5,oY+nY*.5);ctx.rotate(Math.atan2(nY,nX)+Math.PI/2);
+    ctx.fillStyle='#2d8a40';ctx.beginPath();ctx.ellipse(0,0,6*ms,3*ms,0,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='#ddd';ctx.lineWidth=1.2*ms;ctx.beginPath();ctx.moveTo(0,0);ctx.lineTo(0,-9*ms);ctx.stroke();
+    ctx.fillStyle=col?col.css:'#888';ctx.beginPath();ctx.moveTo(0,-9*ms);ctx.lineTo(5*ms,-6.5*ms);ctx.lineTo(0,-4.5*ms);ctx.closePath();ctx.fill();
+    ctx.fillStyle='#ffe0b0';ctx.fillRect(-1.8*ms,-5.5*ms,3.6*ms,4*ms);ctx.beginPath();ctx.arc(0,-6.5*ms,2*ms,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+
+    ctx.font='8px monospace';ctx.textAlign='center';ctx.fillStyle='rgba(255,255,255,.2)';ctx.fillText('N',eCX,eCY-aR-9);
+    ctx.strokeStyle='rgba(255,255,255,.12)';ctx.lineWidth=.7;ctx.beginPath();ctx.moveTo(eCX,eCY-aR-7);ctx.lineTo(eCX,eCY-aR-2);ctx.stroke();
+    ctx.fillStyle='rgba(80,160,240,.38)';if(spW>200)ctx.fillText('atmosphere',eCX-aR*.22,eCY-aR*.8);
+    ctx.restore();
+
+    // divider
+    ctx.fillStyle='rgba(255,255,255,.05)';ctx.fillRect(splitX,0,1,H);
+
+    // ===== OBSERVER SKY =====
+    ctx.save();ctx.beginPath();ctx.rect(splitX,0,skW,H);ctx.clip();
+
+    // Compute sun elevation (-18..90)
+    var elev;
+    if(deg>=90&&deg<=270){elev=Math.sin(((deg-90)/180)*Math.PI)*90;}
+    else if(deg<90){elev=-90+90*Math.max(0,(deg-50)/40);}
+    else{elev=-(90*Math.max(0,(deg-290)/70));}
+    elev=clamp(elev,-18,90);
+
+    var pal=skyPal(elev);
+    var skyH=H*.7,gndH=H-skyH,sx0=splitX;
+
+    // How opaque the sky colour is — 0 deep night, 1 full day
+    // Starts blending in at elev=-8, fully solid by elev=+6
+    var skyBlend=sm(clamp((elev+8)/14,0,1));
+
+    // Paint dark space bg first — warm/cold sky overlays it with controlled opacity
+    ctx.fillStyle='#06060e';ctx.fillRect(sx0,0,skW,H); // fill full height including ground area
+
+    // --- Multi-layer sky gradient --- extends PAST skyH into ground so there's no line
+    var g1=ctx.createLinearGradient(sx0,0,sx0,H);
+    g1.addColorStop(0,    pal.topA(0));
+    g1.addColorStop(0.10, pal.topA(skyBlend*0.55));
+    g1.addColorStop(0.32, pal.midA(skyBlend*0.88));
+    g1.addColorStop(0.58, pal.horA(Math.min(1,skyBlend+0.12)));
+    g1.addColorStop(0.70, pal.lowA(Math.min(1,skyBlend+0.18)));
+    g1.addColorStop(0.82, pal.lowA(sm(skyBlend)*0.55));  // fades into ground
+    g1.addColorStop(1,    pal.lowA(0));
+    ctx.fillStyle=g1;ctx.fillRect(sx0,0,skW,H);
+
+    // Layer 2: warm colour wash — adds orange/red at sunrise/sunset, fades top AND bottom
+    if(col&&pf&&pf>1.2){
+      var warmStr=sm(clamp((pf-1.2)/5.5,0,1))*0.62;
+      var w2=ctx.createLinearGradient(sx0,0,sx0,H);
+      w2.addColorStop(0,   'rgba('+col.r+','+col.g+','+col.bl+',0)');
+      w2.addColorStop(0.18,'rgba('+col.r+','+col.g+','+col.bl+','+(warmStr*0.15).toFixed(3)+')');
+      w2.addColorStop(0.50,'rgba('+col.r+','+col.g+','+col.bl+','+(warmStr*0.40).toFixed(3)+')');
+      w2.addColorStop(0.72,'rgba('+col.r+','+col.g+','+col.bl+','+(warmStr*0.55).toFixed(3)+')');
+      w2.addColorStop(0.88,'rgba('+col.r+','+col.g+','+col.bl+','+(warmStr*0.28).toFixed(3)+')');
+      w2.addColorStop(1,   'rgba('+col.r+','+col.g+','+col.bl+',0)');
+      ctx.fillStyle=w2;ctx.fillRect(sx0,0,skW,H);
+    }
+
+    // Layer 3: horizon glow (radial, centered just below horizon line, bleeds into ground)
+    if(pal.glowCol&&pal.glowR>0&&skyBlend>0.05){
+      var gW=skW*pal.glowR*3.2;
+      var sf2=clamp((deg-90)/180,0,1);
+      var glowX=sx0+lerp(skW*.07,skW*.93,sf2);
+      var hgr=ctx.createRadialGradient(glowX,skyH*0.98,0,glowX,skyH*0.98,gW);
+      var gc0=pal.glowCol.replace(/,[\d.]+\)$/,',.6)');
+      var gc1=pal.glowCol.replace(/,[\d.]+\)$/,',.0)');
+      hgr.addColorStop(0,gc0);hgr.addColorStop(1,gc1);
+      ctx.fillStyle=hgr;ctx.fillRect(sx0,0,skW,H);
+    }
+
+    // Stars fade out as sky brightens
+    var starA=clamp((-elev+2)/10,0,.85);
+    if(starA>0.02){
+      var stpts=[[.12,.08],[.28,.14],[.42,.05],[.58,.19],[.74,.09],[.88,.22],[.2,.33],[.62,.27],[.82,.07],[.35,.41],[.5,.15]];
+      ctx.fillStyle='rgba(255,255,255,'+(starA*.8)+')';
+      for(var i=0;i<stpts.length;i++){ctx.beginPath();ctx.arc(sx0+stpts[i][0]*skW,stpts[i][1]*skyH*.8,.75,0,Math.PI*2);ctx.fill();}
+      if(starA>0.4){
+        var mx=sx0+skW*.72,my=H*.18,ma=clamp((starA-.4)/.45,0,1);
+        var mgr=ctx.createRadialGradient(mx,my,0,mx,my,skW*.075);
+        mgr.addColorStop(0,'rgba(210,220,255,'+(ma*.45)+')');mgr.addColorStop(1,'rgba(210,220,255,0)');
+        ctx.fillStyle=mgr;ctx.beginPath();ctx.arc(mx,my,skW*.075,0,Math.PI*2);ctx.fill();
+        ctx.fillStyle='rgba(200,212,245,'+ma+')';ctx.beginPath();ctx.arc(mx,my,skW*.04,0,Math.PI*2);ctx.fill();
+        // moon cutout
+        ctx.fillStyle=pal.topA(1);ctx.beginPath();ctx.arc(mx+skW*.017,my-skW*.004,skW*.032,0,Math.PI*2);ctx.fill();
+      }
+    }
+
+    // Sun disk + glow
+    if(pal.type!=='night'){
+      var sf2=clamp((deg-90)/180,0,1);
+      var ssx=sx0+lerp(skW*.07,skW*.93,sf2);
+      var ssy=lerp(skyH*.93,skyH*.06,clamp(elev/90,0,1));
+      var srad=Math.max(5,skW*.038);
+      // sun halo
+      if(pal.glowCol&&pal.glowR>0){
+        var gr2=ctx.createRadialGradient(ssx,ssy,0,ssx,ssy,skW*pal.glowR*1.4);
+        var gc2=pal.glowCol.replace(/,[\d.]+\)$/,',.7)');
+        var gc3=pal.glowCol.replace(/,[\d.]+\)$/,',.0)');
+        gr2.addColorStop(0,gc2);gr2.addColorStop(.5,pal.glowCol);gr2.addColorStop(1,gc3);
+        ctx.fillStyle=gr2;ctx.beginPath();ctx.arc(ssx,ssy,skW*pal.glowR*1.4,0,Math.PI*2);ctx.fill();
+      }
+      ctx.fillStyle=pal.sunCol||'#fff8d0';ctx.beginPath();ctx.arc(ssx,ssy,srad,0,Math.PI*2);ctx.fill();
+
+      // scattered blue rays
+      if(pf&&pf>2){
+        var nRays=Math.round(clamp((pf-2)*2.5,0,9));
+        var bX=sx0+skW*.5,bY=skyH*.97;
+        for(var i=0;i<nRays;i++){
+          var t3=(i+.5)/Math.max(1,nRays),mX=lerp(ssx,bX,t3+.1),mY=lerp(ssy+srad,bY,t3+.1);
+          var bA=Math.atan2(bY-ssy,bX-ssx),sp2=(i%2===0?1:-1)*(.3+i*.12),rL=skW*(.06+i*.022);
+          ctx.strokeStyle='rgba(80,140,255,'+(.1*clamp((pf-2)/5,0,1)).toFixed(3)+')';
+          ctx.lineWidth=.8;ctx.setLineDash([2,5]);
+          ctx.beginPath();ctx.moveTo(mX,mY);ctx.lineTo(mX+Math.cos(bA+sp2+Math.PI/2)*rL,mY+Math.sin(bA+sp2+Math.PI/2)*rL);ctx.stroke();ctx.setLineDash([]);
+        }
+      }
+    }
+
+    // Ground — dark base, top edge softened with a transparency gradient
+    var gg=ctx.createLinearGradient(sx0,skyH,sx0,H);
+    gg.addColorStop(0,'rgba(20,72,32,0)');       // fully transparent at skyline
+    gg.addColorStop(0.18,'rgba(22,78,34,0.55)'); // fades in quickly
+    gg.addColorStop(0.45,'rgba(24,82,36,0.88)');
+    gg.addColorStop(1,'rgba(10,46,20,1)');
+    ctx.fillStyle=gg;ctx.fillRect(sx0,skyH,skW,gndH);
+
+    // Hill curve — also with soft top
+    var hillGrad=ctx.createLinearGradient(sx0,skyH,sx0,skyH+gndH*.4);
+    hillGrad.addColorStop(0,'rgba(28,98,42,0)');
+    hillGrad.addColorStop(0.25,'rgba(28,98,42,0.7)');
+    hillGrad.addColorStop(1,'rgba(28,98,42,1)');
+    ctx.fillStyle=hillGrad;
+    ctx.beginPath();ctx.ellipse(sx0+skW*.5,skyH,skW*.62,gndH*.52,0,Math.PI,Math.PI*2);ctx.fill();
+
+    // Observer figure
+    var fx=sx0+skW*.5,fy=skyH-3,fs=Math.max(7,H*.1);
+    ctx.strokeStyle='rgba(255,255,255,.88)';ctx.lineWidth=1.3;
+    ctx.beginPath();ctx.moveTo(fx,fy);ctx.lineTo(fx,fy-fs*.6);ctx.stroke();
+    ctx.fillStyle='rgba(255,215,170,.95)';ctx.beginPath();ctx.arc(fx,fy-fs*.6-fs*.19,fs*.19,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.moveTo(fx-fs*.24,fy-fs*.42);ctx.lineTo(fx+fs*.24,fy-fs*.42);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(fx,fy);ctx.lineTo(fx-fs*.17,fy+fs*.27);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(fx,fy);ctx.lineTo(fx+fs*.17,fy+fs*.27);ctx.stroke();
+
+    ctx.font='8px monospace';ctx.fillStyle='rgba(255,255,255,.14)';ctx.textAlign='left';
+    ctx.fillText("observer's sky",sx0+6,13);
+    ctx.fillStyle='rgba(255,255,255,.08)';ctx.fillText('earth surface',sx0+6,H-4);
+    ctx.restore();
+
+    updateCards(deg,pf,col,onDay);
+  }
+
+  function updateCards(deg,pf,col,onDay){
+    var d=((deg%360)+360)%360;
+    var name,desc;
+    if(d<20||d>=340){name='Midnight';desc='Facing away from the sun — rotating through the deepest part of night.';}
+    else if(d<65){name='Late night';desc='Deep into night. The sun is far below the horizon on the other side of the earth.';}
+    else if(d<90){name='Pre-dawn';desc='Nearly sunrise. Earth is rotating your horizon back toward the sun.';}
+    else if(d<115){name='Sunrise (E)';desc='Rotating into sunlight from the east. Maximum path — vivid reds and oranges.';}
+    else if(d<155){name='Morning';desc='Sun climbs higher. The light journey shortens — orange softens to golden white.';}
+    else if(d<205){name='Noon';desc='Shortest path straight through the atmosphere. Full white spectrum, rich blue sky.';}
+    else if(d<245){name='Afternoon';desc='Earth carries you westward. Path grows longer; warmth begins to return.';}
+    else if(d<265){name='Evening';desc='Long path strips blue wavelengths. Golden and amber tones build.';}
+    else if(d<295){name='Sunset (W)';desc='Maximum path — nearly all blue scattered away, leaving deep reds and orange.';}
+    else if(d<330){name='Dusk';desc='Sun just below the western horizon. Twilight colours linger.';}
+    else{name='Late night';desc='Full darkness. No direct sunlight reaches the observer.';}
+    document.getElementById('dtime').textContent=name;
+    document.getElementById('tspan').textContent=name;
+    document.getElementById('ddesc').textContent=desc;
+    if(onDay&&pf){
+      var names=['Deep red','Orange-red','Orange','Warm orange','Golden','Warm yellow','Yellow-white','White-yellow','White','White','White'];
+      var ni=Math.min(10,Math.round(clamp((pf-1)/7,0,1)*10));
+      document.getElementById('dpath').textContent=pf.toFixed(1)+'×';
+      document.getElementById('dpathsub').textContent='longer than straight up';
+      document.getElementById('dcol').textContent=names[10-ni];
+      document.getElementById('dcol').style.color=col?col.css:'rgba(255,255,255,.4)';
+      document.getElementById('dcolsub').textContent='of direct sunlight';
+    } else {
+      document.getElementById('dpath').textContent='—';
+      document.getElementById('dpathsub').textContent='no sunlight (night)';
+      document.getElementById('dcol').textContent='—';
+      document.getElementById('dcol').style.color='rgba(255,255,255,.25)';
+      document.getElementById('dcolsub').textContent='\u00a0';
+    }
+  }
+
+  // Auto-play loop — always running
+  function step(ts){
+    if(lastTs!==null){
+      var dt=Math.min(ts-lastTs,64);
+      var d=parseFloat(sl.value)||0;
+      // Slow near sunrise(90°) and sunset(270°)
+      var sr=Math.min(Math.abs(d-90),360-Math.abs(d-90));
+      var ss2=Math.min(Math.abs(d-270),360-Math.abs(d-270));
+      var hd=Math.min(sr,ss2);
+      var t=hd>55?1:hd/55;var spd=t*t*(3-2*t);spd=.22+.78*spd;
+      d=(d+dt*8*spd/1000)%360;
+      if(d<0)d+=360;
+      sl.value=d;
+      draw();
+    }
+    lastTs=ts;
+    rafId=requestAnimationFrame(step);
+  }
+
+  // Manual drag pauses auto-advance temporarily
+  var dragTimer=null;
+  var autoPlaying=true;
+  sl.addEventListener('mousedown',function(){
+    autoPlaying=false;
+    if(rafId){cancelAnimationFrame(rafId);rafId=null;lastTs=null;}
+  });
+  sl.addEventListener('touchstart',function(){
+    autoPlaying=false;
+    if(rafId){cancelAnimationFrame(rafId);rafId=null;lastTs=null;}
+  },{passive:true});
+  sl.addEventListener('input',function(){draw();});
+  sl.addEventListener('mouseup',function(){
+    clearTimeout(dragTimer);
+    dragTimer=setTimeout(function(){autoPlaying=true;lastTs=null;rafId=requestAnimationFrame(step);},1200);
+  });
+  sl.addEventListener('touchend',function(){
+    clearTimeout(dragTimer);
+    dragTimer=setTimeout(function(){autoPlaying=true;lastTs=null;rafId=requestAnimationFrame(step);},1200);
+  });
+
+  window.addEventListener('resize',function(){setupCanvas();draw();});
+
+  setupCanvas();
+  draw();
+  // Start auto-play
+  rafId=requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>
